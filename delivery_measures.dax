@@ -1,0 +1,72 @@
+// Model assumptions
+//  Tickets[Key, IssueType, Priority, Tower, Assignee, CreatedDate, ResolvedDate, ResolutionHours, SLATargetHours]
+//  'Calendar' = CALENDAR(MIN(Tickets[CreatedDate]), MAX(Tickets[ResolvedDate])) with Year, MonthStart columns
+//  Relationships: 'Calendar'[Date] -> Tickets[CreatedDate]   (ACTIVE)
+//                 'Calendar'[Date] -> Tickets[ResolvedDate]  (INACTIVE, activated with USERELATIONSHIP)
+
+Created =
+COUNTROWS ( Tickets )
+
+Resolved =
+CALCULATE (
+    COUNTROWS ( Tickets ),
+    USERELATIONSHIP ( 'Calendar'[Date], Tickets[ResolvedDate] )
+)
+
+Net Flow = [Created] - [Resolved]
+
+// Open tickets at the end of the selected period. Tower/Priority slicers still apply
+// because FILTER iterates the already-filtered Tickets table.
+Backlog EOP =
+VAR EndDate = MAX ( 'Calendar'[Date] )
+RETURN
+    CALCULATE (
+        COUNTROWS ( Tickets ),
+        REMOVEFILTERS ( 'Calendar' ),
+        FILTER (
+            Tickets,
+            Tickets[CreatedDate] <= EndDate
+                && ( ISBLANK ( Tickets[ResolvedDate] ) || Tickets[ResolvedDate] > EndDate )
+        )
+    )
+
+// SLA % among tickets resolved in the period
+SLA Met % =
+VAR ResolvedInPeriod =
+    CALCULATETABLE (
+        Tickets,
+        USERELATIONSHIP ( 'Calendar'[Date], Tickets[ResolvedDate] )
+    )
+VAR Met =
+    COUNTROWS ( FILTER ( ResolvedInPeriod, Tickets[ResolutionHours] <= Tickets[SLATargetHours] ) )
+RETURN
+    DIVIDE ( Met, COUNTROWS ( ResolvedInPeriod ) )
+
+// Median resolution time for tickets resolved in the period
+Median Resolution Hrs =
+CALCULATE (
+    MEDIAN ( Tickets[ResolutionHours] ),
+    USERELATIONSHIP ( 'Calendar'[Date], Tickets[ResolvedDate] )
+)
+
+// Rolling 3-month average of resolved tickets (use on a month-level axis)
+Resolved 3M Avg =
+DIVIDE (
+    CALCULATE (
+        [Resolved],
+        DATESINPERIOD ( 'Calendar'[Date], MAX ( 'Calendar'[Date] ), -3, MONTH )
+    ),
+    3
+)
+
+Resolved MoM % =
+VAR Prev =
+    CALCULATE ( [Resolved], DATEADD ( 'Calendar'[Date], -1, MONTH ) )
+RETURN
+    DIVIDE ( [Resolved] - Prev, Prev )
+
+// Backlog health: months of work in the backlog at the current resolution pace
+Backlog Months of Work =
+DIVIDE ( [Backlog EOP], [Resolved 3M Avg] )
+
+// Created by Avash Mohanty, 2026
